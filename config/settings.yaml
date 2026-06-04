@@ -1,0 +1,47 @@
+# PBA X → Toss auto-sync settings
+
+pba:
+  username: "801010athlete"  # https://x.com/801010athlete
+  include_replies: false  # 본문 게시글만 (댓글/리플라이 제외)
+
+# X 수집: browser = Playwright+내 계정(구독글 포함), api = 공식 API(공개글만)
+x:
+  source: browser
+  poll_interval_sec: 25
+  session_file: "${HOME}/.config/pba-toss-sync/x-storage-state.json"
+  headless: true
+  scroll_rounds: 25      # analyze/backfill 시 스크롤 횟수
+  scroll_delay_sec: 1.5
+  include_superfollows: true  # https://x.com/USER/superfollows 구독 글도 수집
+
+llm:
+  # provider: agy (local Antigravity CLI) | vllm | gemini | auto
+  provider: "agy"
+  agy_model: ""   # optional: agy --model (empty = CLI default)
+  model: "gemini-2.5-flash"  # used only when provider=gemini
+  confidence_threshold: 0.85
+  cache_only: false
+  persistent_cache: true   # analyze 재실행 시 tweet_id별 LLM 결과 SQLite 재사용
+
+trading:
+  dry_run: true  # Phase 1: no live orders until false
+  market: "us"
+  use_fractional_buy: true
+  min_order_krw: 10000
+  max_position_pct: 15.0
+  daily_buy_limit_krw: 2000000
+  rebalance_tolerance_pct: 1.0  # skip if within 1% of target
+
+stop_monitor:
+  poll_interval_sec: 10
+  sell_price_buffer_pct: 0.5  # sell limit slightly below stop
+
+tossctl:
+  binary: "${HOME}/.local/bin/tossctl"
+  config_dir: "${HOME}/.config/tossctl"
+
+notifications:
+  telegram_enabled: false
+
+logging:
+  audit_dir: "logs/audit"

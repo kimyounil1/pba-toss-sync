@@ -1,0 +1,2 @@
+# Extend tossctl session every 5 days (before 7-day expiry)
+0 9 */5 * * /home/kimyo/pba-toss-sync/scripts/auth_extend.sh >> /home/kimyo/pba-toss-sync/logs/auth_extend.log 2>&1

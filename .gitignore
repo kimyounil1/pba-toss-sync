@@ -1,0 +1,16 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+*.db
+logs/
+.pytest_cache/
+*.egg-info/
+dist/
+build/
+reports/
+cache/
+*.deb
+data/pba_portfolio_state.analysis.json
+data/llm_parse_cache.db
+data/state.db

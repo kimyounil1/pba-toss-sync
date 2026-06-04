@@ -1,0 +1,18 @@
+{
+  "$schema": "https://raw.githubusercontent.com/JungHoonGhae/tossinvest-cli/main/schemas/config.schema.json",
+  "schema_version": 3,
+  "trading": {
+    "place": true,
+    "sell": true,
+    "fractional": true,
+    "cancel": true,
+    "amend": false,
+    "allow_live_order_actions": false,
+    "dangerous_automation": {
+      "accept_fx_consent": true
+    }
+  },
+  "update_check": {
+    "enabled": true
+  }
+}
