@@ -19,6 +19,8 @@ class SafetyGuard:
         self.db = db
 
     def kill_switch_active(self) -> bool:
+        if self.config.broker == "alpaca":
+            return not self.config.live_trading_enabled
         config_path = Path(self.config.tossctl_config_dir) / "config.json"
         if not config_path.is_file():
             return True

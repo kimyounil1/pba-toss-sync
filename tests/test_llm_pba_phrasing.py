@@ -94,6 +94,53 @@ def test_combined_hypothetical_and_portfolio_prefers_sync():
     assert signal.raw["portfolio_weights"]["CGNX"] == 11.0
 
 
+BB_NEVER_STOPPED = (
+    "Was never stopped on $BB. This remains where I'm at after cashing out "
+    "$DOCN (it happens) & trimming $NBIS."
+)
+
+SNDK_STOPPED_FLAT_CASH = (
+    "Stopped flat $SNDK, this is ugly mkt reversal. Back to 53% cash"
+)
+
+TWLO_OBSERVATION = "$TWLO back into pivot/20ema"
+
+
+def test_refine_never_stopped_not_sell():
+    signal = TradeSignal(action="hold", symbol="BB", confidence=0.8, reasoning="agy")
+    out = refine_trade_signal(BB_NEVER_STOPPED, signal)
+    assert out.action == "hold"
+    assert out.symbol == "BB"
+
+
+def test_refine_stopped_flat_with_cash_is_sell():
+    signal = TradeSignal(
+        action="stop_update",
+        symbol="SNDK",
+        stop_price=1721.16,
+        confidence=0.95,
+        reasoning="agy misread",
+    )
+    out = refine_trade_signal(SNDK_STOPPED_FLAT_CASH, signal)
+    assert out.action == "sell"
+    assert out.symbol == "SNDK"
+    assert out.target_weight_pct == 0.0
+
+
+def test_refine_back_into_pivot_not_buy():
+    signal = TradeSignal(action="buy", symbol="TWLO", confidence=0.9, reasoning="agy")
+    out = refine_trade_signal(TWLO_OBSERVATION, signal)
+    assert out.action == "hold"
+    assert out.symbol == "TWLO"
+
+
+def test_refine_stopped_out_still_sells():
+    signal = TradeSignal(action="hold", confidence=0.8, reasoning="agy")
+    out = refine_trade_signal("Stopped $HOOD", signal)
+    assert out.action == "sell"
+    assert out.symbol == "HOOD"
+
+
 def test_portfolio_sync_updates_state(tmp_path):
     mgr = PBAStateManager(tmp_path / "state.json")
     mgr.apply_signal(

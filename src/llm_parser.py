@@ -638,22 +638,52 @@ def refine_trade_signal(tweet_text: str, signal: TradeSignal) -> TradeSignal:
             raw={**signal.raw, "refined_from": signal.action},
         )
 
-    # "stop flat" = breakeven stop, not exit
+    # "stop flat" = breakeven stop, not exit (not past tense "stopped flat")
     if signal.action == "sell" and re.search(r"\bstop\s+flat\b", text, re.I):
-        sym = signal.symbol or _first_cashtag(text)
-        return TradeSignal(
-            action="stop_update",
-            symbol=sym,
-            stop_price=signal.stop_price,
-            target_weight_pct=signal.target_weight_pct,
-            confidence=max(signal.confidence, 0.85),
-            reasoning=f"[refine] stop flat = raise stop, not sell ({signal.reasoning})",
-            raw={**signal.raw, "refined_from": "sell"},
-        )
+        if not re.search(r"\bstopped\s+flat\b", text, re.I):
+            sym = signal.symbol or _first_cashtag(text)
+            return TradeSignal(
+                action="stop_update",
+                symbol=sym,
+                stop_price=signal.stop_price,
+                target_weight_pct=signal.target_weight_pct,
+                confidence=max(signal.confidence, 0.85),
+                reasoning=f"[refine] stop flat = raise stop, not sell ({signal.reasoning})",
+                raw={**signal.raw, "refined_from": "sell"},
+            )
+
+    # Past tense "stopped flat" + cash raise => exited position (not stop_update)
+    if signal.action == "stop_update" and re.search(r"\bstopped\s+flat\b", text, re.I):
+        if _mentions_cash_raise(text):
+            sym = signal.symbol or _first_cashtag(text)
+            return TradeSignal(
+                action="sell",
+                symbol=sym,
+                target_weight_pct=0.0,
+                confidence=max(signal.confidence, 0.9),
+                reasoning="[refine] stopped flat with cash raise = position exited",
+                raw={**signal.raw, "refined_from": signal.action},
+            )
+
+    # Chart observation "back into pivot" without explicit buy => hold
+    if signal.action == "buy" and re.search(r"\bback\s+into\b", text, re.I):
+        if not re.search(r"\b(?:bought|re-?bought|buying|entered|adding)\b", text, re.I):
+            sym = signal.symbol or _first_cashtag(text)
+            return TradeSignal(
+                action="hold",
+                symbol=sym,
+                confidence=0.75,
+                reasoning="[refine] chart observation (back into pivot), not explicit buy",
+                raw={**signal.raw, "refined_from": signal.action},
+            )
 
     # Short "Stopped $TICKER" posts (past tense stop-out), not "if ... stops me"
     if signal.action in {"hold", "noise"} and re.search(r"\bSTOPPED\b", upper):
-        if not re.search(r"\bIF\b", upper):
+        if (
+            not re.search(r"\bIF\b", upper)
+            and not _is_stopped_negation(text)
+            and _is_past_stopped_out(text)
+        ):
             sym = _first_cashtag(text)
             if sym:
                 return TradeSignal(
@@ -700,3 +730,29 @@ def refine_trade_signal(tweet_text: str, signal: TradeSignal) -> TradeSignal:
 def _first_cashtag(text: str) -> str | None:
     m = re.search(r"\$([A-Za-z]{1,5})\b", text)
     return m.group(1).upper() if m else None
+
+
+def _is_stopped_negation(text: str) -> bool:
+    return bool(
+        re.search(r"\b(?:never|not|wasn'?t|weren'?t)\s+stopped\b", text, re.I)
+    )
+
+
+def _is_past_stopped_out(text: str) -> bool:
+    if _is_stopped_negation(text):
+        return False
+    if re.search(r"\bstopped\s+(?:flat|out)\b", text, re.I):
+        return True
+    if re.search(r"\bstopped\s+\$", text, re.I):
+        return True
+    return False
+
+
+def _mentions_cash_raise(text: str) -> bool:
+    return bool(
+        re.search(
+            r"\b(?:back\s+to|raising|raised)\s+\d+(?:\.\d+)?\s*%\s*cash\b",
+            text,
+            re.I,
+        )
+    )

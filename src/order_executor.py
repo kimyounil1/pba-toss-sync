@@ -10,7 +10,7 @@ from src.db import StateDB
 from src.notifier import Notifier
 from src.position_sizer import OrderPlan
 from src.safety import SafetyGuard
-from src.toss_bridge import TossBridge, TossctlError
+from src.broker_errors import BrokerError
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +19,7 @@ class OrderExecutor:
     def __init__(
         self,
         config: AppConfig,
-        bridge: TossBridge,
+        bridge: object,
         db: StateDB,
         safety: SafetyGuard,
         notifier: Notifier,
@@ -111,7 +111,7 @@ class OrderExecutor:
                 self.db.remove_stop(plan.symbol)
             await self.notifier.notify_order(plan_dict, result, dry_run=False)
             return {"status": "submitted", "order_id": order_id, "result": result}
-        except TossctlError as exc:
+        except BrokerError as exc:
             logger.exception("Order failed: %s", exc)
             self.db.record_order(
                 tweet_id=tweet_id,

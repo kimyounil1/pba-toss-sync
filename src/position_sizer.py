@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
 
 from src.config import AppConfig
+from src.order_qty import floor_qty
 from src.toss_bridge import TossBridge
 
 
@@ -79,15 +79,31 @@ class PositionSizer:
             use_fractional=self.config.use_fractional_buy and delta > 0,
         )
 
-        if abs(current_weight_pct - capped_target_pct) <= self.config.rebalance_tolerance_pct:
+        if (
+            capped_target_pct > 0
+            and abs(current_weight_pct - capped_target_pct) <= self.config.rebalance_tolerance_pct
+        ):
             plan.skip_reason = "within_tolerance"
             plan.delta_krw = 0
             return plan
 
-        if abs(delta) < self.config.min_order_krw:
+        if abs(delta) < self.config.min_order_krw and capped_target_pct > 0:
             plan.skip_reason = "below_min_order"
             plan.delta_krw = 0
             return plan
+
+        if self.config.broker == "alpaca":
+            session = self._bridge_session(default="closed")
+            if session == "regular" and not self.config.alpaca_limit_orders_only:
+                return self._build_alpaca_market_plan(plan, current_qty=current_qty)
+            # extended + overnight closed: live quote limit (not market)
+            return self._build_alpaca_limit_plan(plan, current_qty=current_qty)
+
+        if self.config.broker == "tossctl":
+            session = self._bridge_session(default="regular")
+            if session == "regular":
+                return self._build_toss_market_plan(plan, current_qty=current_qty)
+            return self._build_toss_limit_plan(plan, current_qty=current_qty)
 
         if delta > 0:
             plan.use_fractional = self.config.use_fractional_buy
@@ -95,15 +111,130 @@ class PositionSizer:
                 plan.limit_price_krw = entry_price_krw
                 plan.qty = max(1, int(delta / entry_price_krw))
         else:
-            plan.use_fractional = False
             quote = self.bridge.quote_get(symbol)
             price = entry_price_krw or self.bridge.quote_price_krw(quote)
-            if price > 0:
-                plan.limit_price_krw = price
-                plan.qty = min(current_qty, max(1, int(abs(delta) / price)))
-            elif current_qty > 0:
-                plan.qty = current_qty
+            fractional_sell = current_qty < 1
+            plan.use_fractional = fractional_sell
 
+            if current_qty <= 0:
+                plan.skip_reason = "no_position"
+                plan.delta_krw = 0
+                return plan
+
+            if capped_target_pct <= 0:
+                plan.qty = current_qty
+                plan.limit_price_krw = None
+            elif price > 0:
+                shares_to_sell = min(current_qty, abs(delta) / price)
+                plan.qty = shares_to_sell
+                plan.limit_price_krw = None if fractional_sell else price
+            else:
+                plan.qty = current_qty
+                plan.limit_price_krw = None
+
+        return plan
+
+    def _bridge_session(self, *, default: str) -> str:
+        if hasattr(self.bridge, "session_type"):
+            return self.bridge.session_type()
+        return default
+
+    def _build_toss_market_plan(self, plan: OrderPlan, *, current_qty: float) -> OrderPlan:
+        """Toss regular session: market (fractional buy / qty sell), live quote sizing."""
+        built = self._build_alpaca_market_plan(plan, current_qty=current_qty)
+        if built.side == "sell" and built.qty and built.qty < 1:
+            built.use_fractional = True
+        return built
+
+    def _build_toss_limit_plan(self, plan: OrderPlan, *, current_qty: float) -> OrderPlan:
+        """Toss extended session: integer KRW limit from live quote (not tweet entry)."""
+        built = self._build_alpaca_limit_plan(plan, current_qty=current_qty)
+        if built.limit_price_krw is not None:
+            built.limit_price_krw = int(round(built.limit_price_krw))
+        return built
+
+    def _build_alpaca_market_plan(self, plan: OrderPlan, *, current_qty: float) -> OrderPlan:
+        """Alpaca regular session: market orders sized from live quote (not tweet entry)."""
+        quote = self.bridge.quote_get(plan.symbol)
+
+        if plan.side == "buy":
+            ref = float(quote.get("ask") or quote.get("current_price") or 0)
+            if ref <= 0:
+                plan.skip_reason = "no_quote"
+                plan.delta_krw = 0
+                return plan
+            plan.use_fractional = self.config.use_fractional_buy
+            plan.limit_price_krw = None
+            if plan.use_fractional:
+                return plan
+            plan.qty = floor_qty(plan.delta_krw / ref)
+            if plan.qty <= 0:
+                plan.skip_reason = "qty_too_small"
+                plan.delta_krw = 0
+            return plan
+
+        if current_qty <= 0:
+            plan.skip_reason = "no_position"
+            plan.delta_krw = 0
+            return plan
+
+        ref = float(quote.get("bid") or quote.get("current_price") or 0)
+        if ref <= 0:
+            plan.skip_reason = "no_quote"
+            plan.delta_krw = 0
+            return plan
+
+        plan.use_fractional = False
+        plan.limit_price_krw = None
+        if plan.target_weight_pct <= 0:
+            plan.qty = floor_qty(current_qty)
+        else:
+            plan.qty = floor_qty(min(current_qty, plan.delta_krw / ref))
+        if plan.qty <= 0:
+            plan.skip_reason = "qty_too_small"
+            plan.delta_krw = 0
+        return plan
+
+    def _build_alpaca_limit_plan(self, plan: OrderPlan, *, current_qty: float) -> OrderPlan:
+        """Alpaca: live quote limit orders (not tweet entry price)."""
+        quote = self.bridge.quote_get(plan.symbol)
+        plan.use_fractional = False
+
+        if plan.side == "buy":
+            ref = float(quote.get("ask") or quote.get("current_price") or 0)
+            if ref <= 0:
+                plan.skip_reason = "no_quote"
+                plan.delta_krw = 0
+                return plan
+            limit = ref * (1 + self.config.limit_buy_buffer_pct / 100.0)
+            plan.limit_price_krw = limit
+            plan.qty = floor_qty(plan.delta_krw / limit)
+            if plan.qty <= 0:
+                plan.skip_reason = "qty_too_small"
+                plan.delta_krw = 0
+            return plan
+
+        if current_qty <= 0:
+            plan.skip_reason = "no_position"
+            plan.delta_krw = 0
+            return plan
+
+        ref = float(quote.get("bid") or quote.get("current_price") or 0)
+        if ref <= 0:
+            plan.skip_reason = "no_quote"
+            plan.delta_krw = 0
+            return plan
+        limit = ref * (1 - self.config.limit_sell_buffer_pct / 100.0)
+
+        if plan.target_weight_pct <= 0:
+            plan.qty = current_qty
+        else:
+            plan.qty = min(current_qty, plan.delta_krw / limit)
+        plan.qty = floor_qty(plan.qty)
+        plan.limit_price_krw = limit
+        if plan.qty <= 0:
+            plan.skip_reason = "qty_too_small"
+            plan.delta_krw = 0
         return plan
 
     def plan_from_signal(
@@ -121,4 +252,6 @@ class PositionSizer:
             target_weight_pct = 0.0
         if target_weight_pct is None:
             return None
-        return self.build_plan(symbol, target_weight_pct, entry_price_krw)
+        # Live brokers ignore PBA tweet entry; use quote at order time.
+        tweet_entry = None if self.config.broker in {"alpaca", "tossctl"} else entry_price_krw
+        return self.build_plan(symbol, target_weight_pct, tweet_entry)

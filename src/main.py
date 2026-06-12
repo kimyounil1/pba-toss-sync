@@ -18,7 +18,7 @@ from src.pba_state import PBAStateManager
 from src.position_sizer import PositionSizer
 from src.safety import SafetyGuard
 from src.stop_monitor import StopMonitor
-from src.toss_bridge import TossBridge
+from src.broker import create_broker
 from src.analyze import run_historical_analysis
 from src.x_monitor import Tweet, create_x_monitor
 
@@ -33,7 +33,7 @@ class App:
     def __init__(self, config: AppConfig) -> None:
         self.config = config
         self.db = StateDB(config.data_dir / "state.db")
-        self.bridge = TossBridge(config.tossctl_bin, config.tossctl_config_dir)
+        self.bridge = create_broker(config)
         self.pba_state = PBAStateManager(config.data_dir / "pba_portfolio_state.json")
         self.parser = LLMParser(config)
         self.sizer = PositionSizer(config, self.bridge)
@@ -102,9 +102,12 @@ class App:
     async def run_daemon(self) -> None:
         auth = self.bridge.auth_status()
         if not auth.get("logged_in"):
-            logger.warning("tossctl not logged in — run: tossctl auth login")
+            if self.config.broker == "alpaca":
+                logger.warning("Alpaca not connected — set ALPACA_API_KEY / ALPACA_SECRET_KEY")
+            else:
+                logger.warning("tossctl not logged in — run: tossctl auth login")
         else:
-            logger.info("tossctl session OK")
+            logger.info("%s session OK", auth.get("broker", self.config.broker))
 
         if self.config.x_source == "browser" and not Path(self.config.x_session_file).is_file():
             logger.error(
@@ -218,7 +221,18 @@ def main(argv: list[str] | None = None) -> int:
         print(f"x_session: {config.x_session_file} (exists={x_session})")
         if config.x_source == "browser" and not x_session:
             print("  → run: bash scripts/x_auth_login.sh")
-        print(f"tossctl logged_in: {auth.get('logged_in')}")
+        print(f"broker: {config.broker}")
+        print(f"broker logged_in: {auth.get('logged_in')}")
+        if config.broker == "alpaca":
+            print(f"alpaca paper: {config.alpaca_paper}")
+            if auth.get("equity"):
+                print(f"alpaca equity: ${auth.get('equity')}")
+        toss_cfg = Path(config.tossctl_config_dir) / "config.json"
+        print(f"tossctl config: {toss_cfg} (exists={toss_cfg.is_file()})")
+        if config.broker != "tossctl":
+            print("tossctl: prepared but inactive (switch trading.broker to tossctl when ready)")
+        elif auth.get("config_dir"):
+            print(f"tossctl config_dir: {auth.get('config_dir')}")
         print(f"dry_run: {app.safety.is_dry_run()}")
         print(f"kill_switch: {app.safety.kill_switch_active()}")
         print(f"PBA weights: {app.pba_state.get_weights()}")

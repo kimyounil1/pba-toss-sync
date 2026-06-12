@@ -8,14 +8,16 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import Any
 
 from src.config import AppConfig
 from src.db import StateDB
 from src.notifier import Notifier
 from src.order_executor import OrderExecutor
+from src.order_qty import floor_qty
 from src.position_sizer import OrderPlan
-from src.toss_bridge import TossBridge, TossctlError
+from src.broker_errors import BrokerError
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +26,7 @@ class StopMonitor:
     def __init__(
         self,
         config: AppConfig,
-        bridge: TossBridge,
+        bridge: object,
         db: StateDB,
         executor: OrderExecutor,
         notifier: Notifier,
@@ -35,6 +37,8 @@ class StopMonitor:
         self.executor = executor
         self.notifier = notifier
         self._triggered: set[str] = set()
+        self._failed_at: dict[str, float] = {}
+        self._fail_cooldown_sec = 300
 
     async def run_loop(self) -> None:
         while True:
@@ -52,13 +56,16 @@ class StopMonitor:
         symbols = [s["symbol"] for s in stops]
         try:
             quotes = self.bridge.quote_batch_live(symbols)
-        except TossctlError as exc:
+        except BrokerError as exc:
             logger.warning("Quote fetch failed: %s", exc)
             return
 
         for stop in stops:
             symbol = stop["symbol"]
             if symbol in self._triggered:
+                continue
+            last_fail = self._failed_at.get(symbol, 0.0)
+            if time.time() - last_fail < self._fail_cooldown_sec:
                 continue
             stop_price = float(stop["stop_price"])
             quote = self._quote_for_symbol(quotes, symbol)
@@ -90,34 +97,56 @@ class StopMonitor:
         self, symbol: str, stop_price: float, current: float, stop_row: dict[str, Any]
     ) -> None:
         self._triggered.add(symbol)
-        buffer_pct = self.config.sell_price_buffer_pct / 100.0
-        sell_price = stop_price * (1 - buffer_pct)
         positions = self.bridge.portfolio_positions()
         qty = float(stop_row.get("qty") or 0)
         for pos in positions:
             if self.bridge.position_symbol(pos) == symbol:
                 qty = self.bridge.position_qty(pos)
                 break
+        qty = floor_qty(qty)
         if qty <= 0:
             logger.warning("Stop triggered but no qty for %s", symbol)
             self.db.remove_stop(symbol)
             return
 
+        sell_limit: float | None = None
+        if self.config.broker in {"alpaca", "tossctl"}:
+            session = (
+                self.bridge.session_type()
+                if hasattr(self.bridge, "session_type")
+                else "extended"
+            )
+            use_limit = session != "regular"
+            if self.config.broker == "alpaca" and session == "regular":
+                use_limit = self.config.alpaca_limit_orders_only
+            if use_limit:
+                quote = self.bridge.quote_get(symbol)
+                bid = float(quote.get("bid") or quote.get("current_price") or current)
+                buffer_pct = self.config.limit_sell_buffer_pct / 100.0
+                sell_limit = bid * (1 - buffer_pct)
+
         plan = OrderPlan(
             symbol=symbol,
             side="sell",
-            delta_krw=qty * sell_price,
+            delta_krw=qty * (sell_limit or stop_price),
             target_weight_pct=0,
             current_weight_pct=0,
             target_value_krw=0,
             current_value_krw=0,
             use_fractional=False,
-            limit_price_krw=sell_price,
+            limit_price_krw=sell_limit,
             qty=qty,
         )
-        await self.notifier.notify_stop_triggered(symbol, stop_price, sell_price)
+        await self.notifier.notify_stop_triggered(symbol, stop_price, current)
         result = await self.executor.execute_plan(plan, tweet_id=f"stop-{symbol}", stop_price=None)
         if result.get("status") in {"submitted", "dry_run"}:
             self.db.remove_stop(symbol)
+            self._failed_at.pop(symbol, None)
         else:
             self._triggered.discard(symbol)
+            self._failed_at[symbol] = time.time()
+            logger.warning(
+                "Stop sell failed for %s; cooldown %ss before retry",
+                symbol,
+                self._fail_cooldown_sec,
+            )

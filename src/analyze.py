@@ -18,7 +18,7 @@ from src.db import StateDB
 from src.llm_parser import LLMParser, TradeSignal
 from src.pba_state import PBAStateManager
 from src.position_sizer import PositionSizer
-from src.toss_bridge import TossBridge
+from src.broker import create_broker
 from src.x_monitor import Tweet, create_x_monitor
 
 try:
@@ -81,7 +81,7 @@ async def run_historical_analysis(
     pba_state = PBAStateManager(sim_state_path)
     parse_db = StateDB(config.data_dir / "llm_parse_cache.db")
     parser = LLMParser(config, parse_db=parse_db)
-    bridge = TossBridge(config.tossctl_bin, config.tossctl_config_dir)
+    bridge = create_broker(config)
     sizer = PositionSizer(config, bridge)
     monitor = create_x_monitor(config, db=None)
 

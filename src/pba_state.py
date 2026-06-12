@@ -59,8 +59,10 @@ class PBAStateManager:
         """Update PBA state from signal; return resolved target weight %."""
         if signal.action == "portfolio_sync":
             weights = signal.raw.get("portfolio_weights") or {}
-            for sym, pct in weights.items():
-                self.state.weights[str(sym).upper()] = float(pct)
+            if weights:
+                self.state.weights = {
+                    str(sym).upper(): float(pct) for sym, pct in weights.items()
+                }
             self.save()
             return None
 

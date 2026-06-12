@@ -18,6 +18,14 @@ def _expand(value: str) -> str:
     return os.path.expandvars(os.path.expanduser(value))
 
 
+def _resolve_path(value: str) -> str:
+    expanded = _expand(value)
+    path = Path(expanded)
+    if not path.is_absolute():
+        return str((ROOT / path).resolve())
+    return expanded
+
+
 @dataclass
 class AppConfig:
     pba_username: str = "PBA"
@@ -38,17 +46,30 @@ class AppConfig:
     confidence_threshold: float = 0.85
     llm_cache_only: bool = False
     llm_persistent_cache: bool = True
+    broker: str = "tossctl"  # tossctl | alpaca
     dry_run: bool = True
+    live_trading_enabled: bool = False
     market: str = "us"
     use_fractional_buy: bool = True
     min_order_krw: int = 10_000
     max_position_pct: float = 15.0
     daily_buy_limit_krw: int = 2_000_000
     rebalance_tolerance_pct: float = 1.0
+    limit_buy_buffer_pct: float = 0.15
+    limit_sell_buffer_pct: float = 0.15
+    alpaca_paper: bool = True
+    alpaca_extended_hours: bool = True
+    alpaca_limit_orders_only: bool = True
+    alpaca_base_url: str = ""
+    alpaca_data_url: str = "https://data.alpaca.markets"
+    alpaca_api_key: str = ""
+    alpaca_secret_key: str = ""
     stop_poll_interval_sec: int = 10
     sell_price_buffer_pct: float = 0.5
     tossctl_bin: str = field(default_factory=lambda: _expand("${HOME}/.local/bin/tossctl"))
-    tossctl_config_dir: str = field(default_factory=lambda: _expand("${HOME}/.config/tossctl"))
+    tossctl_config_dir: str = field(
+        default_factory=lambda: str(ROOT / "config" / "tossctl")
+    )
     telegram_enabled: bool = False
     audit_dir: Path = field(default_factory=lambda: ROOT / "logs" / "audit")
     data_dir: Path = field(default_factory=lambda: ROOT / "data")
@@ -74,12 +95,28 @@ def load_config(settings_path: Path | None = None) -> AppConfig:
     notif = raw.get("notifications", {})
     logging_cfg = raw.get("logging", {})
 
+    alpaca_cfg = raw.get("alpaca", {})
+
     dry_run_env = os.getenv("PBA_DRY_RUN", "").strip().lower()
     dry_run = trading.get("dry_run", True)
     if dry_run_env in {"0", "false", "no"}:
         dry_run = False
     elif dry_run_env in {"1", "true", "yes"}:
         dry_run = True
+
+    live_env = os.getenv("PBA_LIVE_TRADING", "").strip().lower()
+    live_trading = bool(trading.get("live_trading_enabled", False))
+    if live_env in {"1", "true", "yes"}:
+        live_trading = True
+    elif live_env in {"0", "false", "no"}:
+        live_trading = False
+
+    alpaca_paper_env = os.getenv("ALPACA_PAPER", "").strip().lower()
+    alpaca_paper = bool(alpaca_cfg.get("paper", True))
+    if alpaca_paper_env in {"0", "false", "no"}:
+        alpaca_paper = False
+    elif alpaca_paper_env in {"1", "true", "yes"}:
+        alpaca_paper = True
 
     cfg = AppConfig(
         pba_username=str(pba.get("username", "PBA")).lstrip("@"),
@@ -103,18 +140,36 @@ def load_config(settings_path: Path | None = None) -> AppConfig:
         llm_cache_only=bool(llm.get("cache_only", False)),
         llm_persistent_cache=str(llm.get("persistent_cache", "true")).lower()
         in {"1", "true", "yes"},
+        broker=str(trading.get("broker", os.getenv("PBA_BROKER", "tossctl"))).lower(),
         dry_run=dry_run,
+        live_trading_enabled=live_trading,
         market=str(trading.get("market", "us")),
         use_fractional_buy=bool(trading.get("use_fractional_buy", True)),
         min_order_krw=int(trading.get("min_order_krw", 10_000)),
         max_position_pct=float(trading.get("max_position_pct", 15.0)),
         daily_buy_limit_krw=int(trading.get("daily_buy_limit_krw", 2_000_000)),
         rebalance_tolerance_pct=float(trading.get("rebalance_tolerance_pct", 1.0)),
+        limit_buy_buffer_pct=float(trading.get("limit_buy_buffer_pct", 0.15)),
+        limit_sell_buffer_pct=float(trading.get("limit_sell_buffer_pct", 0.15)),
         stop_poll_interval_sec=int(stop.get("poll_interval_sec", 10)),
         sell_price_buffer_pct=float(stop.get("sell_price_buffer_pct", 0.5)),
+        alpaca_paper=alpaca_paper,
+        alpaca_extended_hours=str(alpaca_cfg.get("extended_hours", "true")).lower()
+        in {"1", "true", "yes"},
+        alpaca_limit_orders_only=str(alpaca_cfg.get("limit_orders_only", "true")).lower()
+        in {"1", "true", "yes"},
+        alpaca_base_url=str(alpaca_cfg.get("base_url", os.getenv("ALPACA_BASE_URL", ""))),
+        alpaca_data_url=str(
+            alpaca_cfg.get("data_url", os.getenv("ALPACA_DATA_URL", "https://data.alpaca.markets"))
+        ),
+        alpaca_api_key=os.getenv("ALPACA_API_KEY", ""),
+        alpaca_secret_key=os.getenv("ALPACA_SECRET_KEY", os.getenv("ALPACA_API_SECRET", "")),
         tossctl_bin=_expand(toss.get("binary", os.getenv("TOSSCTL_BIN", "${HOME}/.local/bin/tossctl"))),
-        tossctl_config_dir=_expand(
-            toss.get("config_dir", os.getenv("TOSSCTL_CONFIG_DIR", "${HOME}/.config/tossctl"))
+        tossctl_config_dir=_resolve_path(
+            toss.get(
+                "config_dir",
+                os.getenv("TOSSCTL_CONFIG_DIR", str(ROOT / "config" / "tossctl")),
+            )
         ),
         telegram_enabled=bool(notif.get("telegram_enabled", False)),
         audit_dir=ROOT / logging_cfg.get("audit_dir", "logs/audit"),

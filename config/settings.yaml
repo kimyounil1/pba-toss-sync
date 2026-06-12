@@ -24,21 +24,34 @@ llm:
   persistent_cache: true   # analyze 재실행 시 tweet_id별 LLM 결과 SQLite 재사용
 
 trading:
-  dry_run: true  # Phase 1: no live orders until false
+  broker: alpaca  # tossctl | alpaca
+  dry_run: false  # alpaca paper = 실제 페이퍼 주문
+  live_trading_enabled: true  # alpaca 주문 허용 (paper 계좌)
   market: "us"
   use_fractional_buy: true
-  min_order_krw: 10000
+  min_order_krw: 100  # alpaca: USD 최소 주문 ($100)
   max_position_pct: 15.0
-  daily_buy_limit_krw: 2000000
+  daily_buy_limit_krw: 50000  # alpaca: USD 일일 매수 한도 ($50k)
   rebalance_tolerance_pct: 1.0  # skip if within 1% of target
+  limit_buy_buffer_pct: 0.15   # limit buy = ask + 0.15%
+  limit_sell_buffer_pct: 0.15  # limit sell = bid - 0.15%
+
+alpaca:
+  paper: true
+  extended_hours: true   # 프리/애프터마켓 limit 주문
+  limit_orders_only: false  # false=정규장 시장가, 프리/애프터 limit (트윗 가격 미사용)
+  # base_url: ""  # empty = paper-api.alpaca.markets
+  data_url: "https://data.alpaca.markets"
 
 stop_monitor:
   poll_interval_sec: 10
   sell_price_buffer_pct: 0.5  # sell limit slightly below stop
 
+# Toss 실계좌용 (현재 미연동 — broker는 alpaca 유지)
 tossctl:
   binary: "${HOME}/.local/bin/tossctl"
-  config_dir: "${HOME}/.config/tossctl"
+  config_dir: "config/tossctl"  # 프로젝트 로컬 gates (allow_live_order_actions=false)
+  # 연동 시: bash scripts/prepare_toss.sh → auth login → broker: tossctl
 
 notifications:
   telegram_enabled: false

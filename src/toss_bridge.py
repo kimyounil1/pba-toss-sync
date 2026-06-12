@@ -8,7 +8,10 @@ from dataclasses import dataclass
 from typing import Any
 
 
-class TossctlError(RuntimeError):
+from src.broker_errors import BrokerError
+
+
+class TossctlError(BrokerError):
     pass
 
 
@@ -23,8 +26,13 @@ class TossBridge:
         self.binary = binary
         self.config_dir = config_dir
 
+    def _global_args(self) -> list[str]:
+        if self.config_dir:
+            return ["--config-dir", self.config_dir]
+        return []
+
     def _run(self, *args: str, timeout: int = 120) -> dict[str, Any] | list[Any] | Any:
-        cmd = [self.binary, *args, "--output", "json"]
+        cmd = [self.binary, *self._global_args(), *args, "--output", "json"]
         result = subprocess.run(
             cmd,
             capture_output=True,
@@ -44,16 +52,54 @@ class TossBridge:
             raise TossctlError(f"Invalid JSON from tossctl: {stdout[:500]}") from exc
 
     def auth_status(self) -> dict[str, Any]:
-        cmd = [self.binary, "auth", "status", "--output", "json"]
+        cmd = [self.binary, *self._global_args(), "auth", "status", "--output", "json"]
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
         if result.returncode != 0:
-            return {"logged_in": False, "error": result.stderr.strip()}
+            return {
+                "logged_in": False,
+                "broker": "tossctl",
+                "config_dir": self.config_dir,
+                "error": result.stderr.strip(),
+            }
         try:
             data = json.loads(result.stdout)
             data["logged_in"] = True
+            data["broker"] = "tossctl"
+            data["config_dir"] = self.config_dir
             return data
         except json.JSONDecodeError:
-            return {"logged_in": True, "raw": result.stdout}
+            return {
+                "logged_in": True,
+                "broker": "tossctl",
+                "config_dir": self.config_dir,
+                "raw": result.stdout,
+            }
+
+    def session_type(self) -> str:
+        """regular | extended | closed (US market via tossctl market hours)."""
+        try:
+            data = self.market_hours()
+        except TossctlError:
+            return "closed"
+        if not isinstance(data, dict):
+            return "closed"
+        for key in ("session", "us_session", "market_session"):
+            val = str(data.get(key) or "").lower()
+            if val in {"regular", "open", "market"}:
+                return "regular"
+            if val in {"extended", "pre", "after", "premarket", "afterhours"}:
+                return "extended"
+        if data.get("is_open") is True or data.get("regular_open") is True:
+            return "regular"
+        if data.get("extended_open") is True or data.get("is_extended") is True:
+            return "extended"
+        us = data.get("us")
+        if isinstance(us, dict):
+            if us.get("is_open") is True or us.get("regular_open") is True:
+                return "regular"
+            if us.get("extended_open") is True:
+                return "extended"
+        return "closed"
 
     def account_summary(self) -> dict[str, Any]:
         data = self._run("account", "summary")
@@ -213,13 +259,10 @@ class TossBridge:
         ).upper()
 
     def position_qty(self, position: dict[str, Any]) -> float:
-        return float(
-            position.get("qty")
-            or position.get("quantity")
-            or position.get("share")
-            or position.get("holdings")
-            or 0
-        )
+        for key in ("qty_available", "qty", "quantity", "share", "holdings"):
+            if key in position and position[key] is not None:
+                return float(position[key])
+        return 0.0
 
     def quote_price_krw(self, quote: dict[str, Any]) -> float:
         for key in ("current_price", "currentPrice", "price", "close", "last"):
