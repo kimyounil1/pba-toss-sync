@@ -1,0 +1,30 @@
+# PBA 원주(underlying) → 2x Long Daily ETF 매핑
+# tickers 순서대로 브로커 시세 조회 후 첫 거래 가능 종목 사용
+mappings:
+  SNDK:
+    tickers: [SNXX, SNDG]
+    multiplier: 2
+  NVDA:
+    tickers: [NVDL, NVDX]
+    multiplier: 2
+  TSLA:
+    tickers: [TSLL]
+    multiplier: 1.5
+  AMD:
+    tickers: [AMDL]
+    multiplier: 2
+  META:
+    tickers: [FBL]
+    multiplier: 2
+  AAPL:
+    tickers: [AAPU]
+    multiplier: 2
+  MSFT:
+    tickers: [MSFU]
+    multiplier: 2
+  COIN:
+    tickers: [CONL]
+    multiplier: 2
+  MSTR:
+    tickers: [MSTU, MSTX]
+    multiplier: 2

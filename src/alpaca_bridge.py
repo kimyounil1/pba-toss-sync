@@ -12,7 +12,7 @@ import httpx
 
 from src.broker_errors import BrokerError
 from src.order_qty import format_alpaca_qty
-from src.toss_bridge import OrderPreview
+from src.broker_types import OrderPreview
 
 
 class AlpacaError(BrokerError):
@@ -198,6 +198,17 @@ class AlpacaBridge:
         for symbol in symbols:
             quotes[symbol.upper()] = self.quote_get(symbol)
         return quotes
+
+    def list_us_equity_assets(self) -> list[dict[str, Any]]:
+        """All active US equities — used for 2x ETF auto-discovery."""
+        data = self._request(
+            "GET",
+            f"{self.base_url}/v2/assets?status=active&asset_class=us_equity",
+            timeout=60.0,
+        )
+        if not isinstance(data, list):
+            return []
+        return [item for item in data if isinstance(item, dict)]
 
     def order_preview(
         self,

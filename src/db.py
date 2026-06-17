@@ -54,11 +54,13 @@ class StateDB:
                     raw_json TEXT
                 );
                 CREATE TABLE IF NOT EXISTS active_stops (
-                    symbol TEXT PRIMARY KEY,
+                    broker TEXT NOT NULL DEFAULT 'alpaca',
+                    symbol TEXT NOT NULL,
                     stop_price REAL NOT NULL,
                     qty REAL,
                     tweet_id TEXT,
-                    updated_at TEXT NOT NULL
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (broker, symbol)
                 );
                 CREATE TABLE IF NOT EXISTS daily_buy_totals (
                     day TEXT PRIMARY KEY,
@@ -76,6 +78,29 @@ class StateDB:
                 );
                 """
             )
+            self._migrate_stops_broker(conn)
+
+    def _migrate_stops_broker(self, conn: sqlite3.Connection) -> None:
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(active_stops)")}
+        if "broker" in cols:
+            return
+        conn.executescript(
+            """
+            CREATE TABLE active_stops_new (
+                broker TEXT NOT NULL,
+                symbol TEXT NOT NULL,
+                stop_price REAL NOT NULL,
+                qty REAL,
+                tweet_id TEXT,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (broker, symbol)
+            );
+            INSERT INTO active_stops_new (broker, symbol, stop_price, qty, tweet_id, updated_at)
+            SELECT 'alpaca', symbol, stop_price, qty, tweet_id, updated_at FROM active_stops;
+            DROP TABLE active_stops;
+            ALTER TABLE active_stops_new RENAME TO active_stops;
+            """
+        )
 
     def get_llm_parse_cache(self, tweet_id: str) -> dict[str, Any] | None:
         with self._conn() as conn:
@@ -200,23 +225,44 @@ class StateDB:
             return new_total
 
     def upsert_stop(
-        self, symbol: str, stop_price: float, qty: float | None, tweet_id: str | None
+        self,
+        symbol: str,
+        stop_price: float,
+        qty: float | None,
+        tweet_id: str | None,
+        *,
+        broker: str = "alpaca",
     ) -> None:
         with self._conn() as conn:
             conn.execute(
                 """
                 INSERT OR REPLACE INTO active_stops
-                (symbol, stop_price, qty, tweet_id, updated_at)
-                VALUES (?, ?, ?, ?, ?)
+                (broker, symbol, stop_price, qty, tweet_id, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?)
                 """,
-                (symbol, stop_price, qty, tweet_id, datetime.now(timezone.utc).isoformat()),
+                (
+                    broker.lower(),
+                    symbol,
+                    stop_price,
+                    qty,
+                    tweet_id,
+                    datetime.now(timezone.utc).isoformat(),
+                ),
             )
 
-    def remove_stop(self, symbol: str) -> None:
+    def remove_stop(self, symbol: str, *, broker: str = "alpaca") -> None:
         with self._conn() as conn:
-            conn.execute("DELETE FROM active_stops WHERE symbol = ?", (symbol,))
+            conn.execute(
+                "DELETE FROM active_stops WHERE broker = ? AND symbol = ?",
+                (broker.lower(), symbol),
+            )
 
-    def list_active_stops(self) -> list[dict[str, Any]]:
+    def list_active_stops(self, *, broker: str | None = None) -> list[dict[str, Any]]:
         with self._conn() as conn:
-            rows = conn.execute("SELECT * FROM active_stops").fetchall()
+            if broker:
+                rows = conn.execute(
+                    "SELECT * FROM active_stops WHERE broker = ?", (broker.lower(),)
+                ).fetchall()
+            else:
+                rows = conn.execute("SELECT * FROM active_stops").fetchall()
             return [dict(r) for r in rows]

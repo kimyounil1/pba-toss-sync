@@ -46,7 +46,8 @@ class AppConfig:
     confidence_threshold: float = 0.85
     llm_cache_only: bool = False
     llm_persistent_cache: bool = True
-    broker: str = "tossctl"  # tossctl | alpaca
+    broker: str = "toss"  # toss | tossctl (legacy) | alpaca
+    brokers: list[str] = field(default_factory=list)
     dry_run: bool = True
     live_trading_enabled: bool = False
     market: str = "us"
@@ -57,6 +58,11 @@ class AppConfig:
     rebalance_tolerance_pct: float = 1.0
     limit_buy_buffer_pct: float = 0.15
     limit_sell_buffer_pct: float = 0.15
+    use_2x_leverage: bool = False
+    leverage_fallback: str = "underlying"  # underlying | skip
+    leverage_map_path: str = "config/leverage_map.yaml"
+    leverage_auto_discover: bool = True
+    leverage_discovery_cache_hours: int = 24
     alpaca_paper: bool = True
     alpaca_extended_hours: bool = True
     alpaca_limit_orders_only: bool = True
@@ -70,6 +76,10 @@ class AppConfig:
     tossctl_config_dir: str = field(
         default_factory=lambda: str(ROOT / "config" / "tossctl")
     )
+    toss_client_id: str = ""
+    toss_client_secret: str = ""
+    toss_account_seq: int | None = None
+    toss_base_url: str = "https://openapi.tossinvest.com"
     telegram_enabled: bool = False
     audit_dir: Path = field(default_factory=lambda: ROOT / "logs" / "audit")
     data_dir: Path = field(default_factory=lambda: ROOT / "data")
@@ -77,6 +87,25 @@ class AppConfig:
     gemini_api_key: str = ""
     telegram_bot_token: str = ""
     telegram_chat_id: str = ""
+
+    def with_broker(self, broker: str) -> AppConfig:
+        """Copy config pinned to a single broker (for multi-broker runtimes)."""
+        from dataclasses import replace
+
+        return replace(self, broker=broker.lower())
+
+    @property
+    def active_brokers(self) -> list[str]:
+        if self.brokers:
+            return [b.lower() for b in self.brokers]
+        return [(self.broker or "toss").lower()]
+
+
+def _optional_int(value: str) -> int | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    return int(text)
 
 
 def load_config(settings_path: Path | None = None) -> AppConfig:
@@ -91,11 +120,18 @@ def load_config(settings_path: Path | None = None) -> AppConfig:
     llm = raw.get("llm", {})
     trading = raw.get("trading", {})
     stop = raw.get("stop_monitor", {})
-    toss = raw.get("tossctl", {})
+    toss = raw.get("toss", raw.get("toss_openapi", {}))
+    tossctl = raw.get("tossctl", {})
     notif = raw.get("notifications", {})
     logging_cfg = raw.get("logging", {})
 
     alpaca_cfg = raw.get("alpaca", {})
+
+    brokers_raw = trading.get("brokers")
+    if isinstance(brokers_raw, list) and brokers_raw:
+        brokers = [str(b).lower() for b in brokers_raw]
+    else:
+        brokers = []
 
     dry_run_env = os.getenv("PBA_DRY_RUN", "").strip().lower()
     dry_run = trading.get("dry_run", True)
@@ -140,7 +176,8 @@ def load_config(settings_path: Path | None = None) -> AppConfig:
         llm_cache_only=bool(llm.get("cache_only", False)),
         llm_persistent_cache=str(llm.get("persistent_cache", "true")).lower()
         in {"1", "true", "yes"},
-        broker=str(trading.get("broker", os.getenv("PBA_BROKER", "tossctl"))).lower(),
+        broker=str(trading.get("broker", os.getenv("PBA_BROKER", "toss"))).lower(),
+        brokers=brokers,
         dry_run=dry_run,
         live_trading_enabled=live_trading,
         market=str(trading.get("market", "us")),
@@ -151,6 +188,13 @@ def load_config(settings_path: Path | None = None) -> AppConfig:
         rebalance_tolerance_pct=float(trading.get("rebalance_tolerance_pct", 1.0)),
         limit_buy_buffer_pct=float(trading.get("limit_buy_buffer_pct", 0.15)),
         limit_sell_buffer_pct=float(trading.get("limit_sell_buffer_pct", 0.15)),
+        use_2x_leverage=str(trading.get("use_2x_leverage", "false")).lower()
+        in {"1", "true", "yes"},
+        leverage_fallback=str(trading.get("leverage_fallback", "underlying")).lower(),
+        leverage_map_path=str(trading.get("leverage_map", "config/leverage_map.yaml")),
+        leverage_auto_discover=str(trading.get("leverage_auto_discover", "true")).lower()
+        in {"1", "true", "yes"},
+        leverage_discovery_cache_hours=int(trading.get("leverage_discovery_cache_hours", 24)),
         stop_poll_interval_sec=int(stop.get("poll_interval_sec", 10)),
         sell_price_buffer_pct=float(stop.get("sell_price_buffer_pct", 0.5)),
         alpaca_paper=alpaca_paper,
@@ -164,12 +208,22 @@ def load_config(settings_path: Path | None = None) -> AppConfig:
         ),
         alpaca_api_key=os.getenv("ALPACA_API_KEY", ""),
         alpaca_secret_key=os.getenv("ALPACA_SECRET_KEY", os.getenv("ALPACA_API_SECRET", "")),
-        tossctl_bin=_expand(toss.get("binary", os.getenv("TOSSCTL_BIN", "${HOME}/.local/bin/tossctl"))),
+        tossctl_bin=_expand(
+            tossctl.get("binary", os.getenv("TOSSCTL_BIN", "${HOME}/.local/bin/tossctl"))
+        ),
         tossctl_config_dir=_resolve_path(
-            toss.get(
+            tossctl.get(
                 "config_dir",
                 os.getenv("TOSSCTL_CONFIG_DIR", str(ROOT / "config" / "tossctl")),
             )
+        ),
+        toss_client_id=os.getenv("TOSS_CLIENT_ID", str(toss.get("client_id", ""))),
+        toss_client_secret=os.getenv("TOSS_CLIENT_SECRET", str(toss.get("client_secret", ""))),
+        toss_account_seq=_optional_int(
+            os.getenv("TOSS_ACCOUNT_SEQ", str(toss.get("account_seq", "") or ""))
+        ),
+        toss_base_url=str(
+            toss.get("base_url", os.getenv("TOSS_BASE_URL", "https://openapi.tossinvest.com"))
         ),
         telegram_enabled=bool(notif.get("telegram_enabled", False)),
         audit_dir=ROOT / logging_cfg.get("audit_dir", "logs/audit"),

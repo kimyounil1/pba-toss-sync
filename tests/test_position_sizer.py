@@ -193,6 +193,29 @@ def test_alpaca_buy_uses_live_ask_not_tweet_price():
     assert plan.qty == pytest.approx(floor_qty(1600 / 1705.0))
 
 
+def test_toss_day_market_buy_uses_market_notional():
+    class TossOpenBridge(FakeBridge):
+        def account_summary(self):
+            return {"total_eval_amount": 10_000_000}
+
+        def portfolio_positions(self):
+            return []
+
+        def quote_get(self, symbol: str):
+            return {"bid": 170.0, "ask": 171.0, "current_price": 170.5}
+
+        def allows_market_orders(self):
+            return True
+
+    cfg = AppConfig(broker="toss", rebalance_tolerance_pct=0.5, min_order_krw=100)
+    plan = PositionSizer(cfg, TossOpenBridge()).build_plan(
+        "SNDK", target_weight_pct=10.0, entry_price_krw=175.0
+    )
+    assert plan.side == "buy"
+    assert plan.use_fractional is True
+    assert plan.limit_price_krw is None
+
+
 def test_toss_regular_session_buy_uses_market_notional():
     class TossQuoteBridge(FakeBridge):
         def account_summary(self):

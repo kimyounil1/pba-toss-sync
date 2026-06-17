@@ -1,4 +1,4 @@
-"""Broker factory — tossctl or Alpaca paper/live."""
+"""Broker factory — toss Open API, tossctl (legacy), or Alpaca."""
 
 from __future__ import annotations
 
@@ -39,8 +39,9 @@ class TradingBridge(Protocol):
 def create_broker(config: AppConfig) -> TradingBridge:
     from src.alpaca_bridge import AlpacaBridge
     from src.toss_bridge import TossBridge
+    from src.toss_openapi_bridge import TossOpenApiBridge
 
-    broker = (config.broker or "tossctl").lower()
+    broker = (config.broker or "toss").lower()
     if broker == "alpaca":
         return AlpacaBridge(
             api_key=config.alpaca_api_key,
@@ -51,4 +52,11 @@ def create_broker(config: AppConfig) -> TradingBridge:
             extended_hours=config.alpaca_extended_hours,
             limit_orders_only=config.alpaca_limit_orders_only,
         )
-    return TossBridge(config.tossctl_bin, config.tossctl_config_dir)
+    if broker == "tossctl":
+        return TossBridge(config.tossctl_bin, config.tossctl_config_dir)
+    return TossOpenApiBridge(
+        client_id=config.toss_client_id,
+        client_secret=config.toss_client_secret,
+        account_seq=config.toss_account_seq,
+        base_url=config.toss_base_url,
+    )

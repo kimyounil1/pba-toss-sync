@@ -14,12 +14,13 @@ logger = logging.getLogger(__name__)
 
 
 class SafetyGuard:
-    def __init__(self, config: AppConfig, db: StateDB) -> None:
+    def __init__(self, config: AppConfig, db: StateDB, *, broker_name: str | None = None) -> None:
         self.config = config
         self.db = db
+        self.broker_name = (broker_name or config.broker or "toss").lower()
 
     def kill_switch_active(self) -> bool:
-        if self.config.broker == "alpaca":
+        if self.broker_name in {"alpaca", "toss"}:
             return not self.config.live_trading_enabled
         config_path = Path(self.config.tossctl_config_dir) / "config.json"
         if not config_path.is_file():

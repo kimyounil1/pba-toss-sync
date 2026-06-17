@@ -6,7 +6,6 @@ from dataclasses import dataclass
 
 from src.config import AppConfig
 from src.order_qty import floor_qty
-from src.toss_bridge import TossBridge
 
 
 @dataclass
@@ -29,7 +28,7 @@ class OrderPlan:
 
 
 class PositionSizer:
-    def __init__(self, config: AppConfig, bridge: TossBridge) -> None:
+    def __init__(self, config: AppConfig, bridge: object) -> None:
         self.config = config
         self.bridge = bridge
 
@@ -99,6 +98,11 @@ class PositionSizer:
             # extended + overnight closed: live quote limit (not market)
             return self._build_alpaca_limit_plan(plan, current_qty=current_qty)
 
+        if self.config.broker == "toss":
+            if self._market_orders_allowed():
+                return self._build_toss_market_plan(plan, current_qty=current_qty)
+            return self._build_toss_limit_plan(plan, current_qty=current_qty)
+
         if self.config.broker == "tossctl":
             session = self._bridge_session(default="regular")
             if session == "regular":
@@ -138,6 +142,14 @@ class PositionSizer:
         if hasattr(self.bridge, "session_type"):
             return self.bridge.session_type()
         return default
+
+    def _market_orders_allowed(self) -> bool:
+        if hasattr(self.bridge, "allows_market_orders"):
+            return bool(self.bridge.allows_market_orders())
+        session = self._bridge_session(default="closed")
+        if self.config.broker == "alpaca":
+            return session == "regular" and not self.config.alpaca_limit_orders_only
+        return session == "regular"
 
     def _build_toss_market_plan(self, plan: OrderPlan, *, current_qty: float) -> OrderPlan:
         """Toss regular session: market (fractional buy / qty sell), live quote sizing."""
@@ -253,5 +265,5 @@ class PositionSizer:
         if target_weight_pct is None:
             return None
         # Live brokers ignore PBA tweet entry; use quote at order time.
-        tweet_entry = None if self.config.broker in {"alpaca", "tossctl"} else entry_price_krw
+        tweet_entry = None if self.config.broker in {"alpaca", "toss", "tossctl"} else entry_price_krw
         return self.build_plan(symbol, target_weight_pct, tweet_entry)

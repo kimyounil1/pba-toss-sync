@@ -4,21 +4,14 @@ from __future__ import annotations
 
 import json
 import subprocess
-from dataclasses import dataclass
 from typing import Any
 
-
 from src.broker_errors import BrokerError
+from src.broker_types import OrderPreview
 
 
 class TossctlError(BrokerError):
     pass
-
-
-@dataclass
-class OrderPreview:
-    confirm_token: str
-    raw: dict[str, Any]
 
 
 class TossBridge:
@@ -265,7 +258,14 @@ class TossBridge:
         return 0.0
 
     def quote_price_krw(self, quote: dict[str, Any]) -> float:
-        for key in ("current_price", "currentPrice", "price", "close", "last"):
+        for key in (
+            "current_price",
+            "currentPrice",
+            "last",
+            "reference_price",
+            "price",
+            "close",
+        ):
             if key in quote and quote[key] is not None:
                 return float(quote[key])
         return 0.0

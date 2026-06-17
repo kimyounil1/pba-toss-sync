@@ -24,7 +24,11 @@ llm:
   persistent_cache: true   # analyze 재실행 시 tweet_id별 LLM 결과 SQLite 재사용
 
 trading:
-  broker: alpaca  # tossctl | alpaca
+  # alpaca paper 검증 후 toss Open API로 전환
+  broker: alpaca
+  # brokers:
+  #   - alpaca
+  #   - toss
   dry_run: false  # alpaca paper = 실제 페이퍼 주문
   live_trading_enabled: true  # alpaca 주문 허용 (paper 계좌)
   market: "us"
@@ -35,6 +39,12 @@ trading:
   rebalance_tolerance_pct: 1.0  # skip if within 1% of target
   limit_buy_buffer_pct: 0.15   # limit buy = ask + 0.15%
   limit_sell_buffer_pct: 0.15  # limit sell = bid - 0.15%
+  # --- 2배 레버리지 (alpaca·toss 공통) ---
+  use_2x_leverage: true        # 2x ETF 있으면 원주 대신 매수
+  leverage_fallback: underlying # 2x 없으면 원주 매수
+  leverage_map: config/leverage_map.yaml
+  leverage_auto_discover: true # 맵에 없으면 자동 탐색 (Alpaca 종목명 + 시세 검증)
+  leverage_discovery_cache_hours: 24
 
 alpaca:
   paper: true
@@ -47,11 +57,16 @@ stop_monitor:
   poll_interval_sec: 10
   sell_price_buffer_pct: 0.5  # sell limit slightly below stop
 
-# Toss 실계좌용 (현재 미연동 — broker는 alpaca 유지)
+# Toss Open API (WTS > 설정 > Open API)
+toss:
+  # client_id / client_secret → .env (TOSS_CLIENT_ID, TOSS_CLIENT_SECRET)
+  # account_seq: 1   # optional; auto-picks first brokerage account
+  base_url: "https://openapi.tossinvest.com"
+
+# tossctl (legacy — broker: tossctl 일 때만)
 tossctl:
   binary: "${HOME}/.local/bin/tossctl"
-  config_dir: "config/tossctl"  # 프로젝트 로컬 gates (allow_live_order_actions=false)
-  # 연동 시: bash scripts/prepare_toss.sh → auth login → broker: tossctl
+  config_dir: "config/tossctl"
 
 notifications:
   telegram_enabled: false

@@ -1,4 +1,4 @@
-"""Execute orders via tossctl preview→confirm flow."""
+"""Execute orders via broker preview→confirm flow."""
 
 from __future__ import annotations
 
@@ -29,12 +29,14 @@ class OrderExecutor:
         self.db = db
         self.safety = safety
         self.notifier = notifier
+        self.broker_name = safety.broker_name
 
     async def execute_plan(
         self,
         plan: OrderPlan,
         tweet_id: str,
         stop_price: float | None = None,
+        leverage_meta: dict[str, object] | None = None,
     ) -> dict[str, Any]:
         block = self.safety.check_order(plan, tweet_id)
         if block:
@@ -51,6 +53,8 @@ class OrderExecutor:
             "qty": plan.qty,
             "limit_price_krw": plan.limit_price_krw,
         }
+        if leverage_meta:
+            plan_dict["leverage_meta"] = leverage_meta
 
         if dry_run:
             self.db.record_order(
@@ -65,8 +69,14 @@ class OrderExecutor:
                 raw_json=plan_dict,
             )
             if stop_price and plan.side == "buy":
-                self.db.upsert_stop(plan.symbol, stop_price, plan.qty, tweet_id)
-            await self.notifier.notify_order(plan_dict, {"status": "dry_run"}, dry_run=True)
+                self.db.upsert_stop(
+                    plan.symbol, stop_price, plan.qty, tweet_id, broker=self.broker_name
+                )
+            await self.notifier.notify_order(
+                {**plan_dict, "broker": self.broker_name},
+                {"status": "dry_run"},
+                dry_run=True,
+            )
             return {"status": "dry_run", "plan": plan_dict}
 
         try:
@@ -106,10 +116,14 @@ class OrderExecutor:
             if plan.side == "buy":
                 self.safety.record_buy(plan.delta_krw)
             if stop_price and plan.side == "buy":
-                self.db.upsert_stop(plan.symbol, stop_price, plan.qty, tweet_id)
+                self.db.upsert_stop(
+                    plan.symbol, stop_price, plan.qty, tweet_id, broker=self.broker_name
+                )
             if plan.side == "sell" and plan.target_weight_pct == 0:
-                self.db.remove_stop(plan.symbol)
-            await self.notifier.notify_order(plan_dict, result, dry_run=False)
+                self.db.remove_stop(plan.symbol, broker=self.broker_name)
+            await self.notifier.notify_order(
+                {**plan_dict, "broker": self.broker_name}, result, dry_run=False
+            )
             return {"status": "submitted", "order_id": order_id, "result": result}
         except BrokerError as exc:
             logger.exception("Order failed: %s", exc)
@@ -128,10 +142,16 @@ class OrderExecutor:
             return {"status": "failed", "error": str(exc)}
 
     async def update_stop_only(
-        self, symbol: str, stop_price: float, tweet_id: str
+        self,
+        symbol: str,
+        stop_price: float,
+        tweet_id: str,
+        leverage_meta: dict[str, object] | None = None,
     ) -> dict[str, Any]:
-        self.db.upsert_stop(symbol, stop_price, None, tweet_id)
+        self.db.upsert_stop(symbol, stop_price, None, tweet_id, broker=self.broker_name)
+        underlying = (leverage_meta or {}).get("underlying", symbol)
+        note = f" (2x {underlying}→{symbol})" if leverage_meta and leverage_meta.get("leverage") else ""
         await self.notifier.send(
-            f"[조건매도 등록] {symbol} stop={stop_price} (PBA conditional sell level)"
+            f"[조건매도 등록][{self.broker_name}] {symbol} stop={stop_price}{note}"
         )
         return {"status": "stop_updated", "symbol": symbol, "stop_price": stop_price}
